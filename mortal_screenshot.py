@@ -1,6 +1,17 @@
 from playwright.sync_api import sync_playwright
 from datetime import datetime 
 import os
+import tkinter as tk
+from tkinter import simpledialog
+
+def get_url_from_popup() -> str | None:
+    """
+    ポップアップウィンドウを表示して、ユーザーからURLを取得します。
+    """
+    root = tk.Tk()
+    root.withdraw()  # メインウィンドウを非表示にする
+    url = simpledialog.askstring("URL入力", "キャプチャするURLを入力してください:")
+    return url
 
 def capture_screenshots(url: str, export_folder_path: str)-> None:
     """    Capture screenshots of a specific element before and after an operation.
@@ -12,8 +23,8 @@ def capture_screenshots(url: str, export_folder_path: str)-> None:
         page = browser.new_page()
         page.goto(url)
         page.set_viewport_size({"width": 1920, "height": 1080})
-        # ページが完全に読み込まれるのを待つ
-        page.wait_for_load_state("networkidle")
+        # ページの主要な要素が表示されるのを待つ
+        page.wait_for_selector("body > main > div > div.grid-main", state="visible")
 
         # 対象要素の取得とスクショ1枚目
         element = page.locator("body > main > div > div.grid-main")
@@ -31,6 +42,7 @@ def capture_screenshots(url: str, export_folder_path: str)-> None:
             return
         settings_button.click()
         # ダイアログが表示されるのを待つ
+        page.wait_for_timeout(500) # 500ミリ秒待機
         page.wait_for_selector("#options-modal > div", state="visible", timeout=5000)
         # 言語(#langSelect)のプルダウンから日本語を選択
         lang_select = page.locator("#langSelect")
@@ -161,17 +173,23 @@ def capture_screenshots(url: str, export_folder_path: str)-> None:
         browser.close()
 
 if __name__ == "__main__":
-    url = "https://mjai.ekyu.moe/killerducky/?data=/report/a6c236b49da85de2.json"  # ここに対象のURLを指定
+    url = get_url_from_popup()
 
-    # 保存先のフォルダを作成
-    export_folder_path = "screenshots"
-    if not os.path.exists(export_folder_path):
-        os.makedirs(export_folder_path)     
+    if not url:
+        print("URLが入力されませんでした。終了します。")
+    else:
+        # スクリプト自身の場所を基準に保存先フォルダを決定
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        base_export_folder = os.path.join(script_dir, "screenshots")
 
-    # URLの末尾を取得してフォルダ名に追加
-    url_suffix = url.split("/")[-1].split(".")[0]
-    export_folder_path = os.path.join(export_folder_path, url_suffix)
-    if not os.path.exists(export_folder_path):
-        os.makedirs(export_folder_path)
+        # URLの末尾と今日の日付を取得してフォルダ名を作成
+        today_str = datetime.now().strftime("%Y%m%d")
+        url_suffix = url.split("/")[-1].split(".")[0]
+        folder_name = f"{today_str}_{url_suffix}"
+        export_folder_path = os.path.join(base_export_folder, folder_name)
+        
+        # 保存先のフォルダを作成
+        if not os.path.exists(export_folder_path):
+            os.makedirs(export_folder_path)
 
-    capture_screenshots(url, export_folder_path)
+        capture_screenshots(url, export_folder_path)
