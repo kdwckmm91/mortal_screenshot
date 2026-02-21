@@ -1,10 +1,11 @@
 # 開発者向けドキュメント
 
+
 セットアップ:
 
+任意の Python 実行環境で依存をインストールしてください（VS Code の選択したインタプリタを使う等）。
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate
 pip install -r requirements.txt
 python -m playwright install
 ```

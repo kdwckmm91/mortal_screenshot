@@ -5,10 +5,9 @@
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-python -m playwright install
-```
-
+ 任意の Python 環境（システム環境や VS Code の選択したインタプリタ）に依存パッケージをインストールしてください。
+ 
+ ```bash
 実行例:
 
 ```bash
@@ -19,9 +18,4 @@ python -m mortal_screenshot.cli --popup
 
 オプション:
 - `--url`: キャプチャ対象の URL
-- `--out`: 出力のベースフォルダ
-- `--headless`: ヘッドレス実行 (GUIなし)
-- `--popup`: ポップアップで URL を入力する
-
 トラブルシュート:
-- Playwright のブラウザがインストールされていない場合は `python -m playwright install` を実行してください。

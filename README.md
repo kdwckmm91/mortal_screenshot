@@ -24,17 +24,10 @@ killerducky の麻雀結果画面を自動でキャプチャして保存する�
 
 
 ## インストール
-リポジトリのルートが `mortal_screenshot/` である想定で手順を示します。
+任意の Python 環境（システム環境や VS Code の選択したインタプリタ）に依存パッケージをインストールしてください。
 
 ```bash
-# 仮想環境の作成（推奨）
-python -m venv .venv
-source .venv/bin/activate
-
-# 依存のインストール
 pip install -r requirements.txt
-
-# Playwright のブラウザをインストール
 python -m playwright install
 ```
 
