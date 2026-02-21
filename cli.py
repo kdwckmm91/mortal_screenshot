@@ -48,7 +48,8 @@ def main():
     args = parser.parse_args()
 
     url = args.url
-    if not url and args.popup:
+    # デフォルトでポップアップを表示する（--url 未指定時）。
+    if not url:
         if not TK_AVAILABLE:
             logger.error("この環境は tkinter をサポートしていません。--url を指定して実行してください。例: --url 'https://...' ")
             return
@@ -58,7 +59,7 @@ def main():
             logger.error(str(e))
             return
     if not url:
-        logger.error("URL が指定されていません。--url か --popup を使用してください。")
+        logger.error("URL が指定されていません。--url を使用して URL を指定するか、GUI 環境で実行してください。")
         return
 
     url_suffix = url.split("/")[-1].split(".")[0]
