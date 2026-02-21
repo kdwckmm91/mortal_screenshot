@@ -8,10 +8,13 @@ except Exception:
     tk = None
     simpledialog = None
     TK_AVAILABLE = False
-# インポートは実行時に遅延して行う（依存が不足している環境での起動エラーを防ぐ）
-from .utils import setup_logger
-logger = setup_logger(__name__)
-
+# setup_logger を相対 import で試し、失敗したらフォールバックする
+try:
+    from .utils import setup_logger
+except Exception:
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from utils import setup_logger
 
 logger = setup_logger(__name__)
 
