@@ -1,4 +1,11 @@
-from playwright.sync_api import sync_playwright
+try:
+    from playwright.sync_api import sync_playwright
+except Exception as e:
+    raise RuntimeError(
+        "Playwright が見つかりません。この Python 環境に依存パッケージをインストールしてください。\n"
+        "例: `python -m pip install -r requirements.txt` と `python -m playwright install` を実行してください。\n"
+        f"詳細エラー: {e}"
+    )
 from datetime import datetime
 import os
 from typing import Optional
