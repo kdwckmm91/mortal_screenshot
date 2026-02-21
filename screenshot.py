@@ -8,8 +8,14 @@ except Exception as e:
     )
 from datetime import datetime
 import os
-from typing import Optional
-from .utils import setup_logger
+try:
+    # パッケージとして実行される場合
+    from .utils import setup_logger
+except ImportError:
+    # スクリプト直実行の場合のフォールバック
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from utils import setup_logger
 
 logger = setup_logger(__name__)
 

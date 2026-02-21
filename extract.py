@@ -2,7 +2,15 @@
 from typing import List
 import os
 from playwright.sync_api import Page
-from .utils import setup_logger
+
+try:
+    # パッケージとして実行される場合
+    from .utils import setup_logger
+except ImportError:
+    # スクリプト直実行の場合のフォールバック
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from utils import setup_logger
 
 logger = setup_logger(__name__)
 
