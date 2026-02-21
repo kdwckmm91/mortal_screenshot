@@ -1,3 +1,12 @@
+.venv/
+venv_
+__pycache__/
+.pytest_cache/
+screenshots/
+.DS_Store
+*.pyc
+/.idea/
+/.vscode/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
