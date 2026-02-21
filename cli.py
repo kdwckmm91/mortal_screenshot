@@ -26,7 +26,7 @@ def main():
     """
     parser = argparse.ArgumentParser(description="mortal_screenshot CLI")
     parser.add_argument("--url", help="キャプチャ対象のURL", required=False)
-    parser.add_argument("--out", help="出力のベースフォルダ (デフォルト: ./screenshots)", default="./screenshots")
+    parser.add_argument("--out", help="出力のベースフォルダ (デフォルト: package/screenshots)", default=None)
     parser.add_argument("--headless", action="store_true", help="ヘッドレスで実行する")
     parser.add_argument("--popup", action="store_true", help="--url 未指定時にポップアップで入力する")
     args = parser.parse_args()
@@ -39,7 +39,12 @@ def main():
         return
 
     url_suffix = url.split("/")[-1].split(".")[0]
-    export_folder_path = make_export_folder(args.out, url_suffix)
+    # デフォルトの出力先をパッケージ直下の screenshots フォルダにする
+    base_out = args.out
+    if not base_out:
+        package_dir = os.path.dirname(__file__)
+        base_out = os.path.join(package_dir, "screenshots")
+    export_folder_path = make_export_folder(base_out, url_suffix)
     capture_screenshots(url, export_folder_path, headless=args.headless)
 
 
