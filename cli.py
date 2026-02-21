@@ -8,16 +8,10 @@ except Exception:
     tk = None
     simpledialog = None
     TK_AVAILABLE = False
-try:
-    # 通常パッケージとして実行される場合の相対インポート
-    from .screenshot import capture_screenshots
-    from .utils import make_export_folder, setup_logger
-except Exception:
-    # スクリプトを直接実行する場合に備えてフォールバック（デバッグ用）
-    import sys
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from screenshot import capture_screenshots
-    from utils import make_export_folder, setup_logger
+# インポートは実行時に遅延して行う（依存が不足している環境での起動エラーを防ぐ）
+from .utils import setup_logger
+logger = setup_logger(__name__)
+
 
 logger = setup_logger(__name__)
 
@@ -70,6 +64,27 @@ def main():
     if not base_out:
         package_dir = os.path.dirname(__file__)
         base_out = os.path.join(package_dir, "screenshots")
+
+    # 必要なモジュールを遅延インポートして、依存不足の場合は親切な案内を出す
+    try:
+        try:
+            # パッケージとして実行される場合
+            from .screenshot import capture_screenshots
+            from .utils import make_export_folder
+        except Exception:
+            # 直接実行される場合のフォールバック（スクリプト直実行）
+            import sys
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from screenshot import capture_screenshots
+            from utils import make_export_folder
+    except RuntimeError as e:
+        logger.error(str(e))
+        return
+    except Exception as e:
+        logger.error("依存モジュールの読み込みに失敗しました: %s", e)
+        logger.error("必要なパッケージをインストールしてください（例: pip install -r requirements.txt）。")
+        return
+
     export_folder_path = make_export_folder(base_out, url_suffix)
     capture_screenshots(url, export_folder_path, headless=args.headless)
 
