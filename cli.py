@@ -2,8 +2,16 @@ import argparse
 import os
 import tkinter as tk
 from tkinter import simpledialog
-from .screenshot import capture_screenshots
-from .utils import make_export_folder, setup_logger
+try:
+    # 通常パッケージとして実行される場合の相対インポート
+    from .screenshot import capture_screenshots
+    from .utils import make_export_folder, setup_logger
+except Exception:
+    # スクリプトを直接実行する場合に備えてフォールバック（デバッグ用）
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from screenshot import capture_screenshots
+    from utils import make_export_folder, setup_logger
 
 logger = setup_logger(__name__)
 
