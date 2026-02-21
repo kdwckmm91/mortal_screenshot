@@ -1,7 +1,13 @@
 import argparse
 import os
-import tkinter as tk
-from tkinter import simpledialog
+try:
+    import tkinter as tk
+    from tkinter import simpledialog
+    TK_AVAILABLE = True
+except Exception:
+    tk = None
+    simpledialog = None
+    TK_AVAILABLE = False
 try:
     # 通常パッケージとして実行される場合の相対インポート
     from .screenshot import capture_screenshots
@@ -17,7 +23,12 @@ logger = setup_logger(__name__)
 
 
 def get_url_from_popup() -> str | None:
-    """ポップアップでURLを入力してもらう（GUI）"""
+    """ポップアップでURLを入力してもらう（GUI）。
+
+    `tkinter` が利用できない環境では RuntimeError を投げます。
+    """
+    if not TK_AVAILABLE:
+        raise RuntimeError("この Python 環境は tkinter をサポートしていません。--url オプションで URL を指定するか、tkinter を含む Python を使用してください。")
     root = tk.Tk()
     root.withdraw()
     return simpledialog.askstring("URL入力", "キャプチャするURLを入力してください:")
@@ -41,7 +52,14 @@ def main():
 
     url = args.url
     if not url and args.popup:
-        url = get_url_from_popup()
+        if not TK_AVAILABLE:
+            logger.error("この環境は tkinter をサポートしていません。--url を指定して実行してください。例: --url 'https://...' ")
+            return
+        try:
+            url = get_url_from_popup()
+        except RuntimeError as e:
+            logger.error(str(e))
+            return
     if not url:
         logger.error("URL が指定されていません。--url か --popup を使用してください。")
         return
