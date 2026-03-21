@@ -1,0 +1,93 @@
+name: Story (Form)
+description: 開発や検証の単位となるユーザーストーリーを作成します。
+title: "Story: "
+labels:
+  - "Type: Story"
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 概要
+        Storyは、Epicを構成する開発・検証の単位です。
+        AIDLCのStatus Syncは、このStory単位で進捗を自動更新します。
+
+  - type: input
+    id: epic_link
+    attributes:
+      label: 関連するEpic
+      description: このStoryがぶら下がるEpic Issue番号があれば記載してください（例：#123）。
+      placeholder: "例）#123"
+    validations:
+      required: false
+
+  - type: textarea
+    id: user_story
+    attributes:
+      label: ユーザーストーリー
+      description: As/When/So that 形式などで、このStoryが誰にどんな価値をもたらすかを書いてください。
+      placeholder: |
+        例）
+        As：インサイドセールス担当者として
+        When：商談ごとのチャットログを振り返るときに
+        So that：CVに繋がったポイントが一目で分かるようにしたい
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: 受け入れ条件（Acceptance Criteria）
+      description: このStoryが完了したと見なすための条件を箇条書きで記載してください。
+      placeholder: |
+        例）
+        - 特定顧客のチャット履歴からCVした会話がハイライト表示される
+        - QA観点でのテストケースが全てパスしている
+    validations:
+      required: true
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: AI-DLCフェーズ（参考）
+      description: このStoryが主に対応するAI開発フェーズを選択してください（Project側のPhaseフィールドと合わせて運用する想定です）。
+      options:
+        - Inception（企画・仮説検証）
+        - Construction（構築・実装）
+        - Transition（リリース・運用）
+    validations:
+      required: false
+
+  - type: textarea
+    id: details
+    attributes:
+      label: 詳細 / 要件メモ
+      description: 補足の仕様、UIイメージ、API仕様などがあれば記載してください。
+      placeholder: "必要に応じて詳細な要件やメモを記載してください。"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: branch_required
+    attributes:
+      label: ブランチ作成
+      description: このStoryで新しいブランチを自動作成しますか？
+      options:
+        - "Yes - 新しいブランチを作成する"
+        - "No - 既存ブランチで作業 or 手動作成"
+    validations:
+      required: true
+
+  - type: textarea
+    id: tasks
+    attributes:
+      label: 想定されるタスク（任意）
+      description: このStoryを完了するために必要そうな作業を、ざっくり箇条書きで書いてください（Sub-Taskの叩き台）。
+      placeholder: |
+        例）
+        - レポート画面のワイヤーフレーム作成
+        - API仕様の確認
+        - 実装
+        - テスト
+    validations:
+      required: false

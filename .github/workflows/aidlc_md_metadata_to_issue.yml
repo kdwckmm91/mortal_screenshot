@@ -1,0 +1,185 @@
+name: CV4 MD Metadata -> Issue Body
+
+on:
+  issues:
+    types: [opened, edited]
+
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to update (e.g., 123)'
+        required: true
+        type: number
+
+jobs:
+  write-md-metadata:
+    runs-on: ubuntu-latest
+
+    permissions:
+      issues: write
+
+    env:
+      # Default values shown in Issue body (Markdown templates only)
+      AIDLC_DEFAULT_STATUS: "Todo"
+      AIDLC_DEFAULT_PRIORITY: "Medium"
+      # If empty, Due Date is set as "未設定"
+      AIDLC_DUE_DAYS: ""
+
+    steps:
+      - name: Fill metadata block in issue body
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            let issue = context.payload.issue;
+            if (context.eventName === 'workflow_dispatch') {
+              const issueNumber = Number(context.payload.inputs.issue_number);
+              const res = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+              });
+              issue = res.data;
+            }
+
+            const body = issue.body || '';
+            const labels = (issue.labels || []).map(l => l.name);
+
+            // Avoid infinite loops (this workflow itself edits the issue body)
+            if ((context.actor || '').endsWith('[bot]')) {
+              core.info(`Actor is a bot (${context.actor}). Skip to avoid loops.`);
+              return;
+            }
+
+            // Only for AIDLC issues
+            const isAIDLC = labels.includes('Type: Epic') || labels.includes('Type: Story') || labels.includes('Type: Task');
+            if (!isAIDLC) {
+              core.info('Not an AIDLC issue. Skip.');
+              return;
+            }
+
+            // Only for Markdown templates (marker present)
+            if (!body.includes('<!-- AIDLC_MD_TEMPLATE -->')) {
+              core.info('Marker not found (likely Issue Form). Skip.');
+              return;
+            }
+
+            const createdAt = issue.created_at || new Date().toISOString();
+            const defaultStartDate = createdAt.substring(0, 10);
+
+            const status = process.env.AIDLC_DEFAULT_STATUS || 'Todo';
+            const defaultPriority = process.env.AIDLC_DEFAULT_PRIORITY || 'Medium';
+
+            const getInputSection = (text) => {
+              // Capture the whole section including H4 subsections (#### Priority etc).
+              // Stop only at the next H1-H3 heading.
+              const m = text.match(/^#{2,3}\s*管理情報（入力）[\s\S]*?(?=\n#{1,3}\s|$)/m);
+              return m ? m[0] : null;
+            };
+
+            const getCheckedOption = (section, options) => {
+              if (!section) return null;
+              for (const opt of options) {
+                const re = new RegExp(`^\\s*-\\s*\\[[xX]\\]\\s*${opt}\\s*$`, 'm');
+                if (re.test(section)) return opt;
+              }
+              return null;
+            };
+
+            const getDateValue = (section, key) => {
+              if (!section) return null;
+              // Accept both ':' and '：', and allow the date to be on the next line.
+              // IMPORTANT: There may be multiple occurrences (e.g., auto block first with '未設定').
+              // Scan all occurrences and return the first actual YYYY-MM-DD found.
+              const sameLine = new RegExp(`${key}\\s*[:：][^\\n\\r]*?(\\d{4}-\\d{2}-\\d{2})`, 'ig');
+              for (const m of section.matchAll(sameLine)) {
+                if (m && m[1]) return m[1];
+              }
+
+              const nextLine = new RegExp(`${key}\\s*[:：][^\\n\\r]*\\n\\s*(\\d{4}-\\d{2}-\\d{2})`, 'ig');
+              for (const m of section.matchAll(nextLine)) {
+                if (m && m[1]) return m[1];
+              }
+
+              return null;
+            };
+
+            const getPriorityValue = (section) => {
+              if (!section) return null;
+
+              const checked = getCheckedOption(section, ['High', 'Medium', 'Low']);
+              if (checked) return checked;
+
+              const m1 = /Priority\\s*[:：]\\s*(High|Medium|Low)\\b/i.exec(section);
+              if (m1) return m1[1][0].toUpperCase() + m1[1].slice(1).toLowerCase();
+
+              const matches = [...section.matchAll(/\\b(High|Medium|Low)\\b/gi)].map(m => m[1]);
+              const unique = [...new Set(matches.map(s => s[0].toUpperCase() + s.slice(1).toLowerCase()))];
+              return unique.length === 1 ? unique[0] : null;
+            };
+
+            const inputSection = getInputSection(body);
+            const priorityFromInput = getPriorityValue(inputSection);
+            const priorityFromBody = /^\s*-?\s*Priority\s*[:：]\s*(High|Medium|Low)\b/im.exec(body)?.[1];
+            const priority = priorityFromInput
+              || (priorityFromBody ? (priorityFromBody[0].toUpperCase() + priorityFromBody.slice(1).toLowerCase()) : null)
+              || defaultPriority;
+
+            const startDateFromInput = getDateValue(inputSection, 'Start Date');
+            const startDateFromBody = getDateValue(body, 'Start Date');
+            const startDate = startDateFromInput || startDateFromBody || defaultStartDate;
+
+            const dueDaysRaw = process.env.AIDLC_DUE_DAYS || '';
+            let dueDateText = '未設定';
+            const dueDays = parseInt(dueDaysRaw, 10);
+
+            const dueDateFromInput = getDateValue(inputSection, 'Due Date');
+            const dueDateFromBody = getDateValue(body, 'Due Date');
+            const dueDatePicked = dueDateFromInput || dueDateFromBody;
+            if (dueDatePicked && dueDatePicked !== '未設定') {
+              dueDateText = dueDatePicked;
+            } else if (!inputSection && dueDaysRaw && !Number.isNaN(dueDays)) {
+              const d = new Date(createdAt);
+              d.setUTCDate(d.getUTCDate() + dueDays);
+              dueDateText = d.toISOString().substring(0, 10);
+            }
+
+            const block = [
+              '<!-- AIDLC_META:BEGIN -->',
+              '### 管理情報（自動）',
+              `- Status: ${status}`,
+              `- Priority: ${priority}`,
+              `- Start Date: ${startDate}`,
+              `- Due Date: ${dueDateText}`,
+              '<!-- AIDLC_META:END -->',
+            ].join('\n');
+
+            const begin = '<!-- AIDLC_META:BEGIN -->';
+            const end = '<!-- AIDLC_META:END -->';
+
+            let newBody;
+            if (body.includes(begin) && body.includes(end)) {
+              const pattern = new RegExp(`${begin}[\\s\\S]*?${end}`);
+              newBody = body.replace(pattern, block);
+            } else {
+              // Insert at top
+              newBody = block + '\n\n' + body;
+            }
+
+            // Keep the marker, but move it to the end of the block area
+            newBody = newBody.replace('<!-- AIDLC_MD_TEMPLATE -->', '').trim();
+            newBody = '<!-- AIDLC_MD_TEMPLATE -->\n' + newBody + '\n';
+
+            if (newBody === body) {
+              core.info('No body change. Skip update.');
+              return;
+            }
+
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: newBody,
+            });
+
+            core.info(`Updated metadata block for #${issue.number}`);

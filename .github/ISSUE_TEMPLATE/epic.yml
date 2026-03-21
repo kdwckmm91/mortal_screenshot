@@ -1,0 +1,83 @@
+name: Epic (Form)
+description: 大きな開発テーマ（Epic）を定義します。
+title: "Epic: "
+labels:
+  - "Type: Epic"
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 概要
+        このEpicは、CV4における大きな開発テーマを表します。
+        配下に複数のStoryがぶら下がる想定です。
+
+  - type: input
+    id: summary
+    attributes:
+      label: 概要（Summary）
+      description: このEpicで実現したいことを一言で書いてください。
+      placeholder: 例）チャットレポート機能のUXを改善する
+    validations:
+      required: true
+
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景 / 課題
+      description: なぜこのEpicが必要なのか、ビジネス/ユーザー/技術的な背景を書いてください。
+      placeholder: |
+        例）
+        ・既存のレポート画面ではCVが追いにくい
+        ・営業から「提案資料に転記しづらい」という声が多い
+    validations:
+      required: true
+
+  - type: textarea
+    id: goals
+    attributes:
+      label: ゴール / 成功条件
+      description: このEpicが完了したと判断するための条件（定量・定性）を書いてください。
+      placeholder: |
+        例）
+        ・主要顧客3社で新レポート画面が本番運用されている
+        ・営業からの「レポートに関する問い合わせ」が減る
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: スコープ（含まれるもの / 含まれないもの）
+      description: このEpicで対応する範囲と、あえて含めない範囲を整理してください。
+      placeholder: |
+        例）
+        含まれる：
+        ・レポート画面のUI改修
+        ・APIの集計ロジック変更
+
+        含まれない：
+        ・外部BIツールとの連携
+    validations:
+      required: false
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: リスク / 懸念事項
+      description: 想定されるリスクや不確実性があれば記載してください。
+      placeholder: |
+        例）
+        ・既存ダッシュボード利用中の顧客への影響範囲
+        ・データ量増加に伴うパフォーマンス懸念
+    validations:
+      required: false
+
+  - type: textarea
+    id: related
+    attributes:
+      label: 関連するIssue / Story
+      description: 関連するStoryや他EpicのIssue番号があれば記載してください（例：#123, #456）。
+      placeholder: "例）関連Story: #123, #124"
+    validations:
+      required: false

@@ -1,0 +1,343 @@
+name: CV4 Task Parent Linker
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  link-parent:
+    name: Link Task to Parent Story
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Load AIDLC config
+        run: node scripts/load_aidlc_config.js --format=github-env
+
+      - name: Parse and link parent issue
+        id: parse_parent
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            const issue = context.payload.issue;
+            const labels = issue.labels.map(l => l.name);
+
+            // Outputs for follow-up steps
+            core.setOutput('should_link', 'false');
+
+            // Type: Task ラベルがない場合はスキップ
+            if (!labels.includes("Type: Task")) {
+              core.info("Not a Task issue. Skip.");
+              return;
+            }
+
+            const body = issue.body || "";
+            
+            // デバッグ: Issue本文を出力
+            core.info("=== Issue Body ===");
+            core.info(body);
+            core.info("=== End of Body ===");
+            
+            // "親Story" セクションから Issue 番号を抽出
+            // フォーマット例:
+            // - ### 親Story\n\n#123
+            // - ## 親Story\n\n123
+            const parentMatch = body.match(/#{2,6}\s*親Story[\s\S]*?#?(\d+)/);
+            
+            if (!parentMatch) {
+              core.info("Parent Story number not found in issue body.");
+              core.info("Regex pattern: /###\\s*親Story[\\s\\S]*?#?(\\d+)/");
+              return;
+            }
+
+            const parentNumber = parseInt(parentMatch[1], 10);
+            core.info(`Found parent Story: #${parentNumber}`);
+
+            core.setOutput('should_link', 'true');
+            core.setOutput('parent_number', String(parentNumber));
+
+            // 親 Issue の存在確認
+            try {
+              const parentIssue = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: parentNumber,
+              });
+
+              // 親が Story かどうか確認（オプション）
+              const parentLabels = parentIssue.data.labels.map(l => l.name);
+              if (!parentLabels.includes("Type: Story")) {
+                core.warning(`Issue #${parentNumber} is not a Story. Linking anyway.`);
+              }
+
+              // Issue の node ID を取得
+              const taskNodeId = issue.node_id;
+              const parentNodeId = parentIssue.data.node_id;
+
+              // 1. Parent Issue として設定（GitHub Sub-issues / Issue hierarchy）
+              // NOTE: gh CLI on runners may not support --parent-issue; use GraphQL directly.
+              const parentMutation = `
+                mutation($issueId: ID!, $parentIssueId: ID!) {
+                  updateIssue(input: {id: $issueId, parentIssueId: $parentIssueId}) {
+                    issue { id number }
+                  }
+                }
+              `;
+
+              try {
+                await github.graphql(parentMutation, {
+                  issueId: taskNodeId,
+                  parentIssueId: parentNodeId,
+                });
+                core.info(`✅ Successfully set Parent Story #${parentNumber} for Task #${issue.number}`);
+              } catch (gqlError) {
+                const msg = gqlError?.message || String(gqlError);
+                // Some GitHub environments don't support Issue hierarchy (parentIssueId) via GraphQL.
+                // In that case, keep the workflow succeeding and still update the Project field.
+                if (msg.includes("doesn't accept argument 'parentIssueId'")) {
+                  core.warning(`Parent Issue API is not available on this GitHub instance (parentIssueId not supported). Skipping GitHub Parent Issue linking.`);
+                } else {
+                  throw gqlError;
+                }
+              }
+
+              // Project の "Parent issue" カスタムフィールドを設定
+              const owner = process.env.AIDLC_OWNER;
+              const projectNumber = parseInt(process.env.AIDLC_PROJECT_NUMBER, 10);
+              const parentFieldName = process.env.AIDLC_PARENT_FIELD_NAME || "Parent issue";
+
+              const normalizeName = (value) => String(value || '')
+                .trim()
+                .toLowerCase()
+                .replace(/[\s_-]+/g, '');
+
+              const uniqueStrings = (values) => {
+                const out = [];
+                const seen = new Set();
+                for (const v of values) {
+                  if (v === null || v === undefined) continue;
+                  const s = String(v).trim();
+                  if (!s) continue;
+                  if (seen.has(s)) continue;
+                  seen.add(s);
+                  out.push(s);
+                }
+                return out;
+              };
+
+              const parentFieldCandidates = (() => {
+                const candidates = uniqueStrings([
+                  process.env.AIDLC_PARENT_FIELD_NAME,
+                  parentFieldName,
+                  'Parent issue',
+                  'Parent Issue',
+                  '親課題',
+                  '親Issue',
+                  '親チケット',
+                ]);
+                return { candidates, norms: new Set(candidates.map(normalizeName)) };
+              })();
+
+              if (!owner || !projectNumber) {
+                core.info("AIDLC_OWNER / AIDLC_PROJECT_NUMBER not set. Skipping Parent field update in Project.");
+                return;
+              }
+
+              // Project情報とParent Issueフィールド取得
+              const orgProjectQuery = `
+                query($login: String!, $number: Int!) {
+                  organization(login: $login) {
+                    projectV2(number: $number) {
+                      id
+                      fields(first: 50) {
+                        nodes {
+                          __typename
+                          ... on ProjectV2Field {
+                            id
+                            name
+                            dataType
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+              
+              const userProjectQuery = `
+                query($login: String!, $number: Int!) {
+                  user(login: $login) {
+                    projectV2(number: $number) {
+                      id
+                      fields(first: 50) {
+                        nodes {
+                          __typename
+                          ... on ProjectV2Field {
+                            id
+                            name
+                            dataType
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+
+              let projectNode = null;
+              let projectOwnerType = null;
+              
+              // Try organization first
+              try {
+                const orgData = await github.graphql(orgProjectQuery, {
+                  login: owner,
+                  number: projectNumber,
+                });
+                
+                if (orgData.organization?.projectV2) {
+                  projectNode = orgData.organization.projectV2;
+                  projectOwnerType = 'organization';
+                  core.info(`✓ Project found under organization`);
+                }
+              } catch (error) {
+                core.info(`Organization check: ${error.message}`);
+              }
+              
+              // If not found, try user
+              if (!projectNode) {
+                try {
+                  const userData = await github.graphql(userProjectQuery, {
+                    login: owner,
+                    number: projectNumber,
+                  });
+                  
+                  if (userData.user?.projectV2) {
+                    projectNode = userData.user.projectV2;
+                    projectOwnerType = 'user';
+                    core.info(`✓ Project found under user account`);
+                  }
+                } catch (error) {
+                  core.info(`User check: ${error.message}`);
+                }
+              }
+              
+              if (!projectNode) {
+                core.info(`Could not find Project #${projectNumber}. Skipping Parent field update.`);
+                return;
+              }
+
+              const projectId = projectNode.id;
+              let parentFieldId = null;
+              let parentFieldDataType = null;
+
+              // "Parent issue" フィールドを検索
+              for (const field of projectNode.fields.nodes) {
+                if (parentFieldCandidates.norms.has(normalizeName(field.name))) {
+                  parentFieldId = field.id;
+                  parentFieldDataType = field.dataType;
+                  core.info(`Found Parent field: ${field.name} (Type: ${field.dataType}, ID: ${field.id})`);
+                  break;
+                }
+              }
+
+              if (!parentFieldId) {
+                core.info(`Parent field not found in Project (candidates: ${parentFieldCandidates.candidates.join(', ')}). Skipping.`);
+                return;
+              }
+
+              // Task IssueがProjectに追加されているか確認し、ProjectItemIDを取得
+              const itemQuery = `
+                query($issueId: ID!) {
+                  node(id: $issueId) {
+                    ... on Issue {
+                      projectItems(first: 10) {
+                        nodes {
+                          id
+                          project {
+                            id
+                            number
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+
+              const itemData = await github.graphql(itemQuery, {
+                issueId: taskNodeId,
+              });
+
+              const projectItems = itemData.node?.projectItems?.nodes || [];
+              const targetItem = projectItems.find(item => item.project.id === projectId);
+
+              if (!targetItem) {
+                core.info(`Task #${issue.number} is not in Project ${projectNumber}. Skipping Parent field update.`);
+                return;
+              }
+
+              const itemId = targetItem.id;
+
+              // Parent StoryフィールドにParent Story Issue番号を設定
+              // TEXTタイプのフィールドの場合、文字列値を設定
+              let updateMutation;
+              let variables;
+              
+              if (parentFieldDataType === 'TEXT') {
+                // Textフィールド: "#6" のような文字列を設定
+                updateMutation = `
+                  mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $text: String!) {
+                    updateProjectV2ItemFieldValue(
+                      input: {
+                        projectId: $projectId
+                        itemId: $itemId
+                        fieldId: $fieldId
+                        value: {
+                          text: $text
+                        }
+                      }
+                    ) {
+                      projectV2Item {
+                        id
+                      }
+                    }
+                  }
+                `;
+                
+                variables = {
+                  projectId: projectId,
+                  itemId: itemId,
+                  fieldId: parentFieldId,
+                  text: `#${parentNumber}`
+                };
+              } else {
+                // その他のフィールドタイプ（将来のための保険）
+                core.warning(`Unsupported field type: ${parentFieldDataType}. Expected TEXT.`);
+                return;
+              }
+
+              try {
+                await github.graphql(updateMutation, variables);
+                core.info(
+                  `✅ Successfully set Parent issue field in Project (Projects v2) for Task #${issue.number} -> Parent Story #${parentNumber}`
+                );
+              } catch (updateError) {
+                core.setFailed(`Failed to update Project Parent issue field: ${updateError.message}`);
+              }
+
+            } catch (error) {
+              core.setFailed(`Failed to process parent issue #${parentNumber}: ${error.message}`);
+            }
+

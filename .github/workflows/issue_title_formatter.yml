@@ -1,0 +1,87 @@
+name: CV4 Issue Title Formatter
+
+on:
+  issues:
+    types: [opened, labeled, edited]
+  # 手動実行オプション
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to format'
+        required: true
+
+jobs:
+  format-title:
+    name: Format issue title based on type and number
+    runs-on: ubuntu-latest
+
+    permissions:
+      issues: write
+
+    steps:
+      - name: Format issue title
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.payload.issue;
+            const number = issue.number;
+            const oldTitle = issue.title;
+
+            // ラベルから Type を判定
+            const labels = issue.labels.map(l => l.name);
+            let kind = null;
+            if (labels.includes("Type: Epic")) kind = "Epic";
+            else if (labels.includes("Type: Story")) kind = "Story";
+            else if (labels.includes("Type: Task")) kind = "Task";
+
+            // 種別が分からなければ何もしない
+            if (!kind) {
+              core.info("No Type label (Epic/Story/Task). Skip.");
+              return;
+            }
+
+            const padded = String(number).padStart(5, '0');
+            const prefix = `[${kind}] ${padded}: `;
+
+            // 既存のフォーマットを全て削除してクリーンなタイトルを取得
+            let cleanTitle = oldTitle;
+            
+            // 1. テンプレートのプレフィックス (Epic:/Story:/Task: or Epic:等) を削除
+            const templatePrefixSpace = `${kind}: `;
+            const templatePrefixNoSpace = `${kind}:`;
+            if (cleanTitle.startsWith(templatePrefixSpace)) {
+              cleanTitle = cleanTitle.substring(templatePrefixSpace.length).trim();
+            } else if (cleanTitle.startsWith(templatePrefixNoSpace)) {
+              cleanTitle = cleanTitle.substring(templatePrefixNoSpace.length).trim();
+            }
+            
+            // 2. [Type] 形式を削除
+            const typeBracketPattern = new RegExp(`^\\[${kind}\\]\\s*`, 'i');
+            cleanTitle = cleanTitle.replace(typeBracketPattern, '').trim();
+            
+            // 3. <PROJECT_KEY>-XXX 形式（例: ABC-123）を削除
+            cleanTitle = cleanTitle.replace(/^[A-Z][A-Z0-9]*-\d+\s+/, '').trim();
+            
+            // 4. 既存の番号プレフィックス (#数字: や 数字:) を削除
+            cleanTitle = cleanTitle.replace(/^#?\d+\s*:\s*/, '').trim();
+
+            // 5. 末尾の GitHub 自動付与 Issue番号 (例: #279) を削除
+            cleanTitle = cleanTitle.replace(/\s+#\d+$/, '').trim();
+
+            // すでに正しいフォーマットになっていれば何もしない
+            if (oldTitle === prefix + cleanTitle) {
+              core.info("Title already correctly formatted. Skip.");
+              return;
+            }
+
+            const newTitle = prefix + cleanTitle;
+
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: number,
+              title: newTitle,
+            });
+
+            core.info(`Updated title: "${oldTitle}" -> "${newTitle}"`);

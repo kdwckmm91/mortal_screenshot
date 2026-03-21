@@ -1,0 +1,61 @@
+name: CV4 AIDLC Status Sync
+
+on:
+  # 開発ブランチへの push をトリガーにする
+  push:
+    branches-ignore:
+      - main
+      - master
+  # PR のライフサイクル（作成 / 更新 / マージ / クローズ）でトリガー
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
+  # 手動実行（検証・デバッグ用）
+  workflow_dispatch:
+
+jobs:
+  status-sync:
+    name: Run CV4 AIDLC Status Sync
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      repository-projects: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Load AIDLC config
+        run: node scripts/load_aidlc_config.js --format=github-env
+
+      # AIDLC 用環境変数と GitHub 標準変数の確認用ログ
+      - name: Print AIDLC envs
+        run: |
+          echo "AIDLC_OWNER=$AIDLC_OWNER"
+          echo "AIDLC_PROJECT_NUMBER=$AIDLC_PROJECT_NUMBER"
+          echo "GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
+          echo "GITHUB_EVENT_NAME=$GITHUB_EVENT_NAME"
+
+      # イベント情報をログ出力（以前のデバッグステップを継続）
+      - name: Debug status sync event
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            core.info(`Event: ${context.eventName}`);
+            core.info(`Action: ${context.payload.action}`);
+            core.info(`Ref: ${context.ref}`);
+            core.info(`SHA: ${context.sha}`);
+
+      # 本処理: Status Sync スクリプトを実行
+      - name: Run AIDLC Status Sync script
+        env:
+          GITHUB_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        run: node scripts/aidlc_status_sync.js

@@ -1,0 +1,166 @@
+name: Bulk Fix Issue Titles
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run mode (true=preview only, false=actually update)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  bulk-fix-titles:
+    name: Fix all issue titles to AIDLC format
+    runs-on: ubuntu-latest
+
+    permissions:
+      issues: write
+
+    steps:
+      - name: Fix issue titles
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const dryRun = '${{ inputs.dry_run }}' === 'true';
+            
+            if (dryRun) {
+              core.info('🔍 DRY RUN MODE: 実際の更新は行いません');
+            } else {
+              core.info('🔄 UPDATE MODE: Issueタイトルを更新します');
+            }
+
+            // 全Issue取得
+            core.info('📋 Issueを取得中...');
+            const issues = [];
+            let page = 1;
+
+            while (true) {
+              const { data } = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'all',
+                per_page: 100,
+                page: page,
+              });
+
+              if (data.length === 0) break;
+              issues.push(...data);
+              page++;
+            }
+
+            core.info(`✅ ${issues.length}件のIssueを取得しました\n`);
+
+            let updatedCount = 0;
+            let skippedCount = 0;
+            let errorCount = 0;
+
+            for (const issue of issues) {
+              // Pull Requestsは除外
+              if (issue.pull_request) continue;
+
+              const number = issue.number;
+              const oldTitle = issue.title;
+              const labels = issue.labels.map(l => l.name);
+
+              // Type判定
+              let kind = null;
+              if (labels.includes('Type: Epic')) kind = 'Epic';
+              else if (labels.includes('Type: Story')) kind = 'Story';
+              else if (labels.includes('Type: Task')) kind = 'Task';
+
+              if (!kind) {
+                core.info(`⏭️  Issue #${number}: Type ラベルなし - スキップ`);
+                skippedCount++;
+                continue;
+              }
+
+              const padded = String(number).padStart(5, '0');
+              const prefix = `[${kind}] ${padded}: `;
+
+              // 既存のフォーマットを全て削除してクリーンなタイトルを取得
+              let cleanTitle = oldTitle;
+
+              // 1. テンプレートのプレフィックス (Epic:/Story:/Task: or Epic:等) を削除
+              const templatePrefixSpace = `${kind}: `;
+              const templatePrefixNoSpace = `${kind}:`;
+              if (cleanTitle.startsWith(templatePrefixSpace)) {
+                cleanTitle = cleanTitle.substring(templatePrefixSpace.length).trim();
+              } else if (cleanTitle.startsWith(templatePrefixNoSpace)) {
+                cleanTitle = cleanTitle.substring(templatePrefixNoSpace.length).trim();
+              }
+
+              // 2. [Type] 形式を削除
+              const typeBracketPattern = new RegExp(`^\\[${kind}\\]\\s*`, 'i');
+              cleanTitle = cleanTitle.replace(typeBracketPattern, '').trim();
+
+              // 3. <PROJECT_KEY>-XXX 形式（例: ABC-123）を削除
+              cleanTitle = cleanTitle.replace(/^[A-Z][A-Z0-9]*-\d+\s+/, '').trim();
+
+              // 4. 既存の番号プレフィックス (#数字: や 数字:) を削除
+              cleanTitle = cleanTitle.replace(/^#?\d+\s*:\s*/, '').trim();
+
+              // 5. 末尾の GitHub 自動付与 Issue番号 (例: #279) を削除
+              cleanTitle = cleanTitle.replace(/\s+#\d+$/, '').trim();
+
+              const newTitle = prefix + cleanTitle;
+
+              // 既にフォーマット済みかチェック
+              if (oldTitle === newTitle) {
+                core.info(`✅ Issue #${number}: 既にフォーマット済み`);
+                skippedCount++;
+                continue;
+              }
+
+              // タイトルが変更されない場合はスキップ
+              if (oldTitle === newTitle) {
+                core.info(`⏭️  Issue #${number}: 変更不要`);
+                skippedCount++;
+                continue;
+              }
+
+              core.info(`🔄 Issue #${number}:`);
+              core.info(`   変更前: "${oldTitle}"`);
+              core.info(`   変更後: "${newTitle}"`);
+
+              if (!dryRun) {
+                try {
+                  await github.rest.issues.update({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: number,
+                    title: newTitle,
+                  });
+                  core.info(`   ✅ 更新完了`);
+                  updatedCount++;
+                } catch (error) {
+                  core.error(`   ❌ 更新失敗: ${error.message}`);
+                  errorCount++;
+                }
+              } else {
+                core.info(`   (Dry run - 実際の更新はスキップ)`);
+                updatedCount++;
+              }
+
+              // レート制限対策
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+
+            core.info('\n' + '='.repeat(60));
+            core.info('📊 処理結果:');
+            if (dryRun) {
+              core.info(`   更新予定: ${updatedCount}件`);
+            } else {
+              core.info(`   更新: ${updatedCount}件`);
+            }
+            core.info(`   スキップ: ${skippedCount}件`);
+            core.info(`   エラー: ${errorCount}件`);
+            core.info('='.repeat(60));
+
+            if (dryRun) {
+              core.info('\n💡 実際に更新するには、dry_run を false に設定して再実行してください');
+            }

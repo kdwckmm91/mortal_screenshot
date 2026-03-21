@@ -1,0 +1,376 @@
+name: CV4 Story to Epic Parent Linker
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  link-epic-parent:
+    name: Link Story to Parent Epic
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Load AIDLC config
+        run: node scripts/load_aidlc_config.js --format=github-env
+
+      - name: Parse and link parent Epic
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            const issue = context.payload.issue;
+            const labels = issue.labels.map(l => l.name);
+
+            // Type: Story ラベルがない場合はスキップ
+            if (!labels.includes("Type: Story")) {
+              core.info("Not a Story issue. Skip.");
+              return;
+            }
+
+            const body = issue.body || "";
+            
+            // "関連するEpic" セクションから Issue 番号を抽出
+            // フォーマット例:
+            // - ### 関連するEpic\n\n#123
+            // - ## 関連するEpic\n\n123
+            const epicMatch = body.match(/#{2,6}\s*関連するEpic[\s\S]*?#?(\d+)/);
+            
+            if (!epicMatch) {
+              core.info("Epic number not found in issue body.");
+              return;
+            }
+
+            const epicNumber = parseInt(epicMatch[1], 10);
+            core.info(`Found Epic: #${epicNumber}`);
+
+            // 親 Epic Issue の存在確認
+            try {
+              const epicIssue = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: epicNumber,
+              });
+
+              const epicLabels = epicIssue.data.labels.map(l => l.name);
+              if (!epicLabels.includes("Type: Epic")) {
+                core.warning(`Issue #${epicNumber} is not an Epic. Linking anyway.`);
+              }
+
+              // 1. Parent Issue として設定（GraphQL）
+              const taskMutation = `
+                mutation($issueId: ID!, $parentIssueId: ID!) {
+                  updateIssue(input: {id: $issueId, parentIssueId: $parentIssueId}) {
+                    issue {
+                      id
+                      number
+                    }
+                  }
+                }
+              `;
+
+              const storyNodeId = issue.node_id;
+              const epicNodeId = epicIssue.data.node_id;
+
+              try {
+                await github.graphql(taskMutation, {
+                  issueId: storyNodeId,
+                  parentIssueId: epicNodeId,
+                });
+                core.info(`✅ Successfully set Parent Epic #${epicNumber} for Story #${issue.number}`);
+              } catch (gqlError) {
+                const msg = gqlError?.message || String(gqlError);
+                if (msg.includes("doesn't accept argument 'parentIssueId'")) {
+                  core.warning('Parent Issue API is not available on this GitHub instance (parentIssueId not supported). Skipping GitHub Parent Issue linking.');
+                } else {
+                  core.warning(`GraphQL API failed: ${msg}. Continuing to set Epic field in Project.`);
+                }
+              }
+
+              // 2. Project の Epic カスタムフィールドも設定
+              const owner = process.env.AIDLC_OWNER;
+              const projectNumber = parseInt(process.env.AIDLC_PROJECT_NUMBER, 10);
+              const epicFieldName = process.env.AIDLC_EPIC_FIELD_NAME || "Epic";
+
+              const normalizeName = (value) => String(value || '')
+                .trim()
+                .toLowerCase()
+                .replace(/[\s_-]+/g, '');
+
+              const uniqueStrings = (values) => {
+                const out = [];
+                const seen = new Set();
+                for (const v of values) {
+                  if (v === null || v === undefined) continue;
+                  const s = String(v).trim();
+                  if (!s) continue;
+                  if (seen.has(s)) continue;
+                  seen.add(s);
+                  out.push(s);
+                }
+                return out;
+              };
+
+              const createCandidateSet = (values) => {
+                const candidates = uniqueStrings(values);
+                const norms = new Set(candidates.map(normalizeName));
+                return { candidates, norms };
+              };
+
+              const epicFieldCandidates = createCandidateSet([
+                process.env.AIDLC_EPIC_FIELD_NAME,
+                'Epic',
+                'エピック',
+              ]);
+
+              const parentFieldCandidates = createCandidateSet([
+                process.env.AIDLC_PARENT_FIELD_NAME,
+                'Parent issue',
+                'Parent Issue',
+                '親課題',
+                '親Issue',
+                '親チケット',
+              ]);
+
+              if (!owner || !projectNumber) {
+                core.info("AIDLC_OWNER / AIDLC_PROJECT_NUMBER not set. Skipping Epic field update.");
+                return;
+              }
+
+              // Project情報とEpicフィールド取得
+              // Try organization first, then user if not found
+              const projectQuery = `
+                query($login: String!, $number: Int!) {
+                  organization(login: $login) {
+                    projectV2(number: $number) {
+                      id
+                      fields(first: 50) {
+                        nodes {
+                          __typename
+                          ... on ProjectV2SingleSelectField {
+                            id
+                            name
+                            options { id name }
+                          }
+                          ... on ProjectV2Field {
+                            id
+                            name
+                            dataType
+                          }
+                        }
+                      }
+                    }
+                  }
+                  user(login: $login) {
+                    projectV2(number: $number) {
+                      id
+                      fields(first: 50) {
+                        nodes {
+                          __typename
+                          ... on ProjectV2SingleSelectField {
+                            id
+                            name
+                            options { id name }
+                          }
+                          ... on ProjectV2Field {
+                            id
+                            name
+                            dataType
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+
+              const projectData = await github.graphql(projectQuery, {
+                login: owner,
+                number: projectNumber,
+              });
+
+              // Try organization first, then user
+              let projectNode = projectData.organization?.projectV2;
+              if (!projectNode) {
+                projectNode = projectData.user?.projectV2;
+              }
+              if (!projectNode) {
+                core.info("Project not found (tried both organization and user). Skipping Epic field update.");
+                return;
+              }
+
+              const projectId = projectNode.id;
+              let epicFieldId = null;
+              let epicFieldNameResolved = null;
+              const epicOptions = {};
+
+              for (const field of projectNode.fields.nodes || []) {
+                if (field.__typename === 'ProjectV2SingleSelectField' && !epicFieldId && epicFieldCandidates.norms.has(normalizeName(field.name))) {
+                  epicFieldId = field.id;
+                  epicFieldNameResolved = field.name;
+                  for (const opt of field.options || []) {
+                    epicOptions[opt.name] = opt.id;
+                  }
+                }
+              }
+
+              if (!epicFieldId) {
+                core.info(`Epic field not found in project (candidates: ${epicFieldCandidates.candidates.join(', ')}). Skipping.`);
+                return;
+              }
+              core.info(`Resolved Epic field name: ${epicFieldNameResolved}`);
+
+              // Epic Issue のタイトルから Epic カスタムフィールドの値を特定
+              // 例: "[Epic] 116: 計画・設計フェーズ" → "[Epic] 116: 計画・設計フェーズ" など
+              const epicTitle = epicIssue.data.title;
+              const epicTitleMatch = epicTitle.match(/\[Epic\]\s+(\d+):\s*(.+)/);
+              
+              let epicOptionId = null;
+              if (epicTitleMatch) {
+                const epicNum = epicTitleMatch[1];
+                const epicName = epicTitleMatch[2].trim();
+                const candidateOptionNames = [
+                  `[Epic] ${epicNum}: ${epicName}`,
+                  `${epicNum}: ${epicName}`,
+                  `${epicNum} ${epicName}`,
+                  epicName,
+                  epicNum,
+                ];
+
+                for (const candidate of candidateOptionNames) {
+                  if (epicOptions[candidate]) {
+                    epicOptionId = epicOptions[candidate];
+                    break;
+                  }
+                }
+                
+                if (!epicOptionId) {
+                  // 数字のみでも試す（Epic番号だけの場合）
+                  for (const [optName, optId] of Object.entries(epicOptions)) {
+                    if (optName.includes(epicNum) || optName.includes(epicName)) {
+                      epicOptionId = optId;
+                      break;
+                    }
+                  }
+                }
+              }
+
+              if (!epicOptionId) {
+                core.warning(`Epic option not found for Epic #${epicNumber}. Available options: ${Object.keys(epicOptions).join(', ')}`);
+                return;
+              }
+
+              // Story の Project Item を取得
+              const itemQuery = `
+                query($owner: String!, $name: String!, $number: Int!) {
+                  repository(owner: $owner, name: $name) {
+                    issue(number: $number) {
+                      projectItems(first: 20) {
+                        nodes {
+                          id
+                          project { number }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+
+              const itemData = await github.graphql(itemQuery, {
+                owner: context.repo.owner,
+                name: context.repo.repo,
+                number: issue.number,
+              });
+
+              const storyItem = (itemData.repository?.issue?.projectItems.nodes || [])
+                .find(it => it.project?.number === projectNumber);
+
+              if (!storyItem) {
+                core.info(`Story #${issue.number} is not in Project ${projectNumber}. Skipping Epic field update.`);
+                return;
+              }
+
+              // Epic フィールドを設定
+              const updateEpicMutation = `
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $projectId,
+                    itemId: $itemId,
+                    fieldId: $fieldId,
+                    value: { singleSelectOptionId: $optionId }
+                  }) {
+                    projectV2Item { id }
+                  }
+                }
+              `;
+
+              await github.graphql(updateEpicMutation, {
+                projectId,
+                itemId: storyItem.id,
+                fieldId: epicFieldId,
+                optionId: epicOptionId,
+              });
+
+              core.info(`✅ Set Epic field in Project for Story #${issue.number}`);
+
+              // 3. Project の "Parent issue" フィールドも設定
+              let parentFieldId = null;
+
+              // Parent Issueフィールドを検索
+              for (const field of projectNode.fields.nodes || []) {
+                if (field.__typename === 'ProjectV2Field' && parentFieldCandidates.norms.has(normalizeName(field.name))) {
+                  parentFieldId = field.id;
+                  break;
+                }
+              }
+
+              if (!parentFieldId) {
+                core.info(`Parent Issue field not found in Project (candidates: ${parentFieldCandidates.candidates.join(', ')}). Skipping.`);
+              } else {
+                // Parent IssueフィールドにEpic Issue番号を設定
+                const updateParentMutation = `
+                  mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: ProjectV2FieldValue!) {
+                    updateProjectV2ItemFieldValue(
+                      input: {
+                        projectId: $projectId
+                        itemId: $itemId
+                        fieldId: $fieldId
+                        value: $value
+                      }
+                    ) {
+                      projectV2Item {
+                        id
+                      }
+                    }
+                  }
+                `;
+
+                try {
+                  await github.graphql(updateParentMutation, {
+                    projectId: projectId,
+                    itemId: storyItem.id,
+                    fieldId: parentFieldId,
+                    value: {
+                      issueId: epicNodeId
+                    }
+                  });
+                  core.info(`✅ Successfully set Parent Issue #${epicNumber} in Project field for Story #${issue.number}`);
+                } catch (updateError) {
+                  core.warning(`Failed to update Project Parent Issue field: ${updateError.message}`);
+                }
+              }
+
+            } catch (error) {
+              core.setFailed(`Failed to link Epic #${epicNumber}: ${error.message}`);
+            }

@@ -1,0 +1,624 @@
+name: CV4 Story Auto Project Registration
+
+on:
+  issues:
+    types: [opened, labeled, edited]
+
+jobs:
+  add-story-to-project:
+    name: Add Story issue to CV4-Backlog project
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      issues: write
+      repository-projects: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Load AIDLC config
+        run: node scripts/load_aidlc_config.js --format=github-env
+
+      - name: Add Story to Project (Projects v2)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            const issue = context.payload.issue;
+            const body = issue.body || '';
+            const number = issue.number;
+            const labels = issue.labels.map(l => l.name);
+
+            // Story だけ対象
+            if (!labels.includes("Type: Story")) {
+              core.info("Not a Story (no 'Type: Story' label). Skip.");
+              return;
+            }
+
+            const owner = process.env.AIDLC_OWNER;
+            const projectNumber = parseInt(process.env.AIDLC_PROJECT_NUMBER, 10);
+            const statusFieldName = process.env.AIDLC_STATUS_FIELD_NAME || "Status";
+            const todoOptionName = process.env.AIDLC_STATUS_TODO || "Todo";
+
+            const priorityFieldName = process.env.AIDLC_PRIORITY_FIELD_NAME || "Priority";
+            const priorityDefaultName = process.env.AIDLC_PRIORITY_DEFAULT || "Medium";
+            const startDateFieldName = process.env.AIDLC_START_DATE_FIELD_NAME || "Start Date";
+            const dueDateFieldName = process.env.AIDLC_DUE_DATE_FIELD_NAME || "Due Date";
+            const dueDaysRaw = process.env.AIDLC_DUE_DAYS || "";
+
+            const normalizeName = (value) => String(value || '')
+              .trim()
+              .toLowerCase()
+              .replace(/[\s_-]+/g, '');
+
+            const uniqueStrings = (values) => {
+              const out = [];
+              const seen = new Set();
+              for (const v of values) {
+                if (v === null || v === undefined) continue;
+                const s = String(v).trim();
+                if (!s) continue;
+                if (seen.has(s)) continue;
+                seen.add(s);
+                out.push(s);
+              }
+              return out;
+            };
+
+            const createCandidateSet = (values) => {
+              const candidates = uniqueStrings(values);
+              const norms = new Set(candidates.map(normalizeName));
+              return { candidates, norms };
+            };
+
+            const findOptionId = (optionsByName, optionsByNorm, candidateNames) => {
+              for (const c of uniqueStrings(candidateNames)) {
+                if (optionsByName[c]) return optionsByName[c];
+                const n = normalizeName(c);
+                if (optionsByNorm[n]) return optionsByNorm[n];
+              }
+              return null;
+            };
+
+            const statusFieldCandidates = createCandidateSet([
+              process.env.AIDLC_STATUS_FIELD_NAME,
+              'Status',
+              'ステータス',
+            ]);
+
+            const priorityFieldCandidates = createCandidateSet([
+              process.env.AIDLC_PRIORITY_FIELD_NAME,
+              'Priority',
+              '優先度',
+              '優先順位',
+            ]);
+
+            const startDateFieldCandidates = createCandidateSet([
+              process.env.AIDLC_START_DATE_FIELD_NAME,
+              'Start Date',
+              '開始日',
+              '開始日付',
+            ]);
+
+            const dueDateFieldCandidates = createCandidateSet([
+              process.env.AIDLC_DUE_DATE_FIELD_NAME,
+              'Due Date',
+              '期限',
+              '期限日',
+              '期日',
+              '締切',
+              '締切日',
+            ]);
+
+            const todoOptionCandidates = uniqueStrings([
+              process.env.AIDLC_STATUS_TODO,
+              'Todo',
+              'To Do',
+              'TODO',
+              '未着手',
+              '未対応',
+              '作業前',
+            ]);
+
+            const getInputSection = (text) => {
+              // Capture the whole section including H4 subsections (#### Priority etc).
+              // Stop only at the next H1-H3 heading.
+              const m = text.match(/^#{2,3}\s*管理情報（入力）[\s\S]*?(?=\n#{1,3}\s|$)/m);
+              return m ? m[0] : null;
+            };
+
+            const getCheckedOption = (section, options) => {
+              if (!section) return null;
+              for (const opt of options) {
+                const re = new RegExp(`^\\s*-\\s*\\[[xX]\\]\\s*${opt}\\s*$`, 'm');
+                if (re.test(section)) return opt;
+              }
+              return null;
+            };
+
+            const getDateValue = (section, key) => {
+              if (!section) return null;
+              // Accept both ':' and '：', and allow the date to be on the next line.
+              // IMPORTANT: There may be multiple occurrences (e.g., auto block first with '未設定').
+              // Scan all occurrences and return the first actual YYYY-MM-DD found.
+              const sameLine = new RegExp(`${key}\\s*[:：][^\\n\\r]*?(\\d{4}-\\d{2}-\\d{2})`, 'ig');
+              for (const m of section.matchAll(sameLine)) {
+                if (m && m[1]) return m[1];
+              }
+
+              const nextLine = new RegExp(`${key}\\s*[:：][^\\n\\r]*\\n\\s*(\\d{4}-\\d{2}-\\d{2})`, 'ig');
+              for (const m of section.matchAll(nextLine)) {
+                if (m && m[1]) return m[1];
+              }
+
+              return null;
+            };
+
+            const getPriorityValue = (section) => {
+              if (!section) return null;
+
+              // Prefer checked task-list items.
+              const checked = getCheckedOption(section, ['High', 'Medium', 'Low']);
+              if (checked) return checked;
+
+              // Support "Priority: High" style.
+              const m1 = /Priority\\s*[:：]\\s*(High|Medium|Low)\\b/i.exec(section);
+              if (m1) return m1[1][0].toUpperCase() + m1[1].slice(1).toLowerCase();
+
+              // If user kept only one of the words, accept it; if multiple exist, treat as ambiguous.
+              const matches = [...section.matchAll(/\\b(High|Medium|Low)\\b/gi)].map(m => m[1]);
+              const unique = [...new Set(matches.map(s => s[0].toUpperCase() + s.slice(1).toLowerCase()))];
+              return unique.length === 1 ? unique[0] : null;
+            };
+
+            const getPriorityValueStrict = (text) => {
+              if (!text) return null;
+              const checked = getCheckedOption(text, ['High', 'Medium', 'Low']);
+              if (checked) return checked;
+              const m1 = /^\\s*-?\\s*Priority\\s*[:：]\\s*(High|Medium|Low)\\b/im.exec(text);
+              if (m1) return m1[1][0].toUpperCase() + m1[1].slice(1).toLowerCase();
+              return null;
+            };
+
+            if (!owner || !projectNumber) {
+              core.setFailed("AIDLC_OWNER / AIDLC_PROJECT_NUMBER are not set.");
+              return;
+            }
+
+            // 1. Project & fields 取得
+            // IMPORTANT: Don't query both organization and user in a single GraphQL request.
+            // If login is an org, `user(login)` can raise NOT_FOUND and fail the whole request.
+            const orgProjectQuery = `
+              query($login: String!, $number: Int!) {
+                organization(login: $login) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 50) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options { id name }
+                        }
+                        ... on ProjectV2Field {
+                          id
+                          name
+                          dataType
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const userProjectQuery = `
+              query($login: String!, $number: Int!) {
+                user(login: $login) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 50) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options { id name }
+                        }
+                        ... on ProjectV2Field {
+                          id
+                          name
+                          dataType
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const dataOrg = await github.graphql(orgProjectQuery, {
+              login: owner,
+              number: projectNumber,
+            });
+
+            let projectNode = dataOrg.organization?.projectV2;
+            let projectType = 'organization';
+            if (!projectNode) {
+              const dataUser = await github.graphql(userProjectQuery, {
+                login: owner,
+                number: projectNumber,
+              });
+              projectNode = dataUser.user?.projectV2;
+              projectType = 'user';
+            }
+            if (!projectNode) {
+              core.setFailed(`ProjectV2 not found for owner=${owner} number=${projectNumber} (tried both organization and user)`);
+              return;
+            }
+            core.info(`Found project as ${projectType} project`);
+
+            const projectId = projectNode.id;
+            let statusFieldId = null;
+            let statusFieldNameResolved = null;
+            const statusOptionsByName = {};
+            const statusOptionsByNorm = {};
+
+            const availableSingleSelectFields = [];
+            const availableDateFields = [];
+
+            let priorityFieldId = null;
+            let priorityFieldNameResolved = null;
+            const priorityOptionsByName = {};
+            const priorityOptionsByNorm = {};
+
+            let startDateFieldId = null;
+            let dueDateFieldId = null;
+            let startDateFieldNameResolved = null;
+            let dueDateFieldNameResolved = null;
+
+            for (const field of projectNode.fields.nodes || []) {
+              if (field.__typename === 'ProjectV2SingleSelectField') {
+                availableSingleSelectFields.push(field.name);
+
+                if (!statusFieldId && statusFieldCandidates.norms.has(normalizeName(field.name))) {
+                  statusFieldId = field.id;
+                  statusFieldNameResolved = field.name;
+                  for (const opt of field.options || []) {
+                    statusOptionsByName[opt.name] = opt.id;
+                    statusOptionsByNorm[normalizeName(opt.name)] = opt.id;
+                  }
+                }
+
+                if (!priorityFieldId && priorityFieldCandidates.norms.has(normalizeName(field.name))) {
+                  priorityFieldId = field.id;
+                  priorityFieldNameResolved = field.name;
+                  for (const opt of field.options || []) {
+                    priorityOptionsByName[opt.name] = opt.id;
+                    priorityOptionsByNorm[normalizeName(opt.name)] = opt.id;
+                  }
+                }
+              }
+
+              if (field.__typename === 'ProjectV2Field' && field.dataType === 'DATE') {
+                availableDateFields.push(field.name);
+
+                if (!startDateFieldId && startDateFieldCandidates.norms.has(normalizeName(field.name))) {
+                  startDateFieldId = field.id;
+                  startDateFieldNameResolved = field.name;
+                }
+
+                if (!dueDateFieldId && dueDateFieldCandidates.norms.has(normalizeName(field.name))) {
+                  dueDateFieldId = field.id;
+                  dueDateFieldNameResolved = field.name;
+                }
+              }
+            }
+
+            core.info(`Configured (preferred) field names: Status="${statusFieldName}", Priority="${priorityFieldName}", Start Date="${startDateFieldName}", Due Date="${dueDateFieldName}"`);
+            core.info(`Candidate field names: Status=[${statusFieldCandidates.candidates.join(', ')}], Priority=[${priorityFieldCandidates.candidates.join(', ')}], Start=[${startDateFieldCandidates.candidates.join(', ')}], Due=[${dueDateFieldCandidates.candidates.join(', ')}]`);
+            core.info(`Resolved field names: Status="${statusFieldNameResolved || '(not found)'}", Priority="${priorityFieldNameResolved || '(not found)'}", Start Date="${startDateFieldNameResolved || '(not found)'}", Due Date="${dueDateFieldNameResolved || '(not found)'}"`);
+            core.info(`Available single-select fields: ${[...new Set(availableSingleSelectFields)].join(', ')}`);
+            core.info(`Available date fields: ${[...new Set(availableDateFields)].join(', ')}`);
+
+            const todoOptionId = statusFieldId ? findOptionId(statusOptionsByName, statusOptionsByNorm, todoOptionCandidates) : null;
+            if (!statusFieldId) {
+              core.info('Status field not found in project. Skipping Status update.');
+            } else if (!todoOptionId) {
+              core.info(`Status option not found (candidates: ${todoOptionCandidates.join(', ')}). Skipping Status update.`);
+            }
+
+            // 2. Issue の nodeId を取得
+            const issueQuery = `
+              query($owner: String!, $name: String!, $number: Int!) {
+                repository(owner: $owner, name: $name) {
+                  issue(number: $number) {
+                    id
+                    projectItems(first: 20) {
+                      nodes {
+                        id
+                        isArchived
+                        project { number }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const issueData = await github.graphql(issueQuery, {
+              owner: context.repo.owner,
+              name: context.repo.repo,
+              number,
+            });
+
+            const issueNode = issueData.repository?.issue;
+            if (!issueNode) {
+              core.setFailed("Issue not found: #" + number);
+              return;
+            }
+
+            const existingItem = (issueNode.projectItems.nodes || [])
+              .find(it => it.project?.number === projectNumber);
+
+            let itemId = existingItem?.id;
+            const wasAddedNow = !itemId;
+
+            // If the item exists but is archived, unarchive it so fields can be updated.
+            if (itemId && existingItem?.isArchived) {
+              core.info(`Project item is archived. Try unarchiving (issue #${number}).`);
+              const unarchiveMutation = `
+                mutation($projectId: ID!, $itemId: ID!) {
+                  unarchiveProjectV2Item(input: { projectId: $projectId, itemId: $itemId }) {
+                    item { id isArchived }
+                  }
+                }
+              `;
+              try {
+                const res = await github.graphql(unarchiveMutation, { projectId, itemId });
+                core.info(`Unarchived item: isArchived=${res?.unarchiveProjectV2Item?.item?.isArchived}`);
+              } catch (e) {
+                core.setFailed(`Failed to unarchive Project item for issue #${number}: ${e.message || e}`);
+                return;
+              }
+            }
+
+            if (!itemId) {
+              const addItemMutation = `
+                mutation($projectId: ID!, $contentId: ID!) {
+                  addProjectV2ItemById(input: {
+                    projectId: $projectId,
+                    contentId: $contentId
+                  }) {
+                    item { id }
+                  }
+                }
+              `;
+
+              const addItemRes = await github.graphql(addItemMutation, {
+                projectId,
+                contentId: issueNode.id,
+              });
+
+              itemId = addItemRes.addProjectV2ItemById?.item?.id;
+              if (!itemId) {
+                core.setFailed("Failed to add item to project.");
+                return;
+              }
+
+              core.info(`Story #${number} added to Project ${projectNumber}.`);
+            } else {
+              core.info(`Story #${number} is already in Project ${projectNumber}.`);
+            }
+
+            // Helper: YYYY-MM-DD (use issue createdAt)
+            const createdAt = issue.created_at || new Date().toISOString();
+            const defaultStartDate = createdAt.substring(0, 10);
+            let defaultDueDate = null;
+            const dueDays = parseInt(dueDaysRaw, 10);
+            if (dueDaysRaw && !Number.isNaN(dueDays)) {
+              const d = new Date(createdAt);
+              d.setUTCDate(d.getUTCDate() + dueDays);
+              defaultDueDate = d.toISOString().substring(0, 10);
+            }
+
+            // Read current field values so we don't overwrite existing dates/status.
+            let existingStartDate = null;
+            let existingDueDate = null;
+            let existingStatusName = null;
+            try {
+              const itemValuesQuery = `
+                query($id: ID!) {
+                  node(id: $id) {
+                    ... on ProjectV2Item {
+                      id
+                      fieldValues(first: 50) {
+                        nodes {
+                          __typename
+                          ... on ProjectV2ItemFieldDateValue {
+                            date
+                            field {
+                              ... on ProjectV2FieldCommon { name }
+                            }
+                          }
+                          ... on ProjectV2ItemFieldSingleSelectValue {
+                            name
+                            field {
+                              ... on ProjectV2SingleSelectField { name }
+                              ... on ProjectV2FieldCommon { name }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+
+              const itemValuesRes = await github.graphql(itemValuesQuery, { id: itemId });
+              const nodes = itemValuesRes.node?.fieldValues?.nodes || [];
+              for (const n of nodes) {
+                const fieldName = n.field?.name;
+                if (n.__typename === 'ProjectV2ItemFieldDateValue') {
+                  if (startDateFieldNameResolved && fieldName === startDateFieldNameResolved) existingStartDate = n.date || null;
+                  if (dueDateFieldNameResolved && fieldName === dueDateFieldNameResolved) existingDueDate = n.date || null;
+                }
+                if (n.__typename === 'ProjectV2ItemFieldSingleSelectValue') {
+                  if (statusFieldNameResolved && fieldName === statusFieldNameResolved) existingStatusName = n.name || null;
+                }
+              }
+            } catch (e) {
+              core.info(`Failed to read existing field values (non-fatal): ${e.message || e}`);
+            }
+
+            const inputSection = getInputSection(body);
+
+            const inputPriorityFromInput = getPriorityValue(inputSection);
+            const inputStartDateFromInput = getDateValue(inputSection, 'Start Date');
+            const inputDueDateFromInput = getDateValue(inputSection, 'Due Date');
+
+            const inputPriorityFromBody = getPriorityValueStrict(body);
+            const inputStartDateFromBody = getDateValue(body, 'Start Date');
+            const inputDueDateFromBody = getDateValue(body, 'Due Date');
+
+            const inputPriority = inputPriorityFromInput || inputPriorityFromBody;
+            const inputStartDate = inputStartDateFromInput || inputStartDateFromBody;
+            const inputDueDate = inputDueDateFromInput || inputDueDateFromBody;
+
+            core.info(`Input section found: ${!!inputSection}`);
+            core.info(`Parsed inputs (from input): priority=${inputPriorityFromInput || '(none)'} start=${inputStartDateFromInput || '(none)'} due=${inputDueDateFromInput || '(none)'}`);
+            core.info(`Parsed inputs (from body): priority=${inputPriorityFromBody || '(none)'} start=${inputStartDateFromBody || '(none)'} due=${inputDueDateFromBody || '(none)'}`);
+            core.info(`Parsed inputs (final): priority=${inputPriority || '(none)'} start=${inputStartDate || '(none)'} due=${inputDueDate || '(none)'}`);
+            core.info(`Existing item status: ${existingStatusName || '(empty)'}`);
+            core.info(`Existing item dates: start=${existingStartDate || '(empty)'} due=${existingDueDate || '(empty)'}`);
+
+            const priorityToSetName = inputSection
+              ? (inputPriority || priorityDefaultName)
+              : (wasAddedNow ? priorityDefaultName : null);
+
+            const startDateToSet = inputStartDate || (wasAddedNow ? defaultStartDate : null);
+            const dueDateToSet = inputDueDate || (!inputSection && wasAddedNow ? defaultDueDate : null);
+
+            core.info(`Planned updates: priority=${priorityToSetName || '(skip)'} start=${startDateToSet || '(skip)'} due=${dueDateToSet || '(skip)'}`);
+
+            // 5. Status を Todo に設定（追加直後 or 未設定時）
+            const updateStatusMutation = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId,
+                  itemId: $itemId,
+                  fieldId: $fieldId,
+                  value: { singleSelectOptionId: $optionId }
+                }) {
+                  projectV2Item { id }
+                }
+              }
+            `;
+
+            const shouldSetStatus = wasAddedNow || !existingStatusName;
+            if (shouldSetStatus) {
+              if (statusFieldId && todoOptionId) {
+                await github.graphql(updateStatusMutation, {
+                  projectId,
+                  itemId,
+                  fieldId: statusFieldId,
+                  optionId: todoOptionId,
+                });
+                core.info(`Story #${number} Status set (Todo).`);
+              } else {
+                core.info(`Story #${number} Status update skipped (missing field/option).`);
+              }
+            } else {
+              core.info(`Story #${number} already has Status="${existingStatusName}". Skip Status update.`);
+            }
+
+            // 6. Optional: Priority
+            if (priorityToSetName) {
+              if (priorityFieldId) {
+                const priorityOptionId = priorityOptionsByName[priorityToSetName] || priorityOptionsByNorm[normalizeName(priorityToSetName)];
+              if (priorityOptionId) {
+                const updatePriorityMutation = `
+                  mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                    updateProjectV2ItemFieldValue(input: {
+                      projectId: $projectId,
+                      itemId: $itemId,
+                      fieldId: $fieldId,
+                      value: { singleSelectOptionId: $optionId }
+                    }) {
+                      projectV2Item { id }
+                    }
+                  }
+                `;
+                await github.graphql(updatePriorityMutation, {
+                  projectId,
+                  itemId,
+                  fieldId: priorityFieldId,
+                  optionId: priorityOptionId,
+                });
+              } else {
+                core.info(`Priority option "${priorityToSetName}" not found. Skip Priority.`);
+              }
+            } else {
+              core.info(`Priority field not found. Skip Priority.`);
+            }
+            }
+
+            // 7. Optional: Start/Due Date
+            const updateDateMutation = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $date: Date!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId,
+                  itemId: $itemId,
+                  fieldId: $fieldId,
+                  value: { date: $date }
+                }) {
+                  projectV2Item { id }
+                }
+              }
+            `;
+
+            if (startDateToSet) {
+              if (startDateFieldId) {
+                await github.graphql(updateDateMutation, {
+                  projectId,
+                  itemId,
+                  fieldId: startDateFieldId,
+                  date: startDateToSet,
+                });
+              } else {
+                core.info(`Start Date field "${startDateFieldName}" not found. Skip Start Date.`);
+              }
+            } else {
+              core.info('No Start Date input and not newly added. Skip Start Date.');
+            }
+
+            if (dueDateToSet) {
+              if (dueDateFieldId) {
+                await github.graphql(updateDateMutation, {
+                  projectId,
+                  itemId,
+                  fieldId: dueDateFieldId,
+                  date: dueDateToSet,
+                });
+              } else {
+                core.info(`Due Date field "${dueDateFieldName}" not found. Skip Due Date.`);
+              }
+            } else if (!dueDaysRaw) {
+              core.info('AIDLC_DUE_DAYS is empty. Skip Due Date.');
+            } else {
+              core.info('No Due Date input and no default due applied. Skip Due Date.');
+            }
+
+            if (wasAddedNow) {
+              core.info(`Story #${number} added to Project ${projectNumber} and Status set to "${todoOptionName}".`);
+            } else {
+              core.info(`Story #${number} updated in Project ${projectNumber}.`);
+            }

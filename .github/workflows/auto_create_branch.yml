@@ -1,0 +1,93 @@
+name: Auto Create Branch
+
+on:
+  issues:
+    types: [opened, labeled]
+
+jobs:
+  create-branch:
+    runs-on: ubuntu-latest
+    if: |
+      (contains(github.event.issue.labels.*.name, 'Type: Story') ||
+       contains(github.event.issue.labels.*.name, 'Type: Task')) &&
+      (
+        contains(github.event.issue.body, '- [x] Yes - 新しいブランチを作成する') ||
+        contains(github.event.issue.body, '\nYes - 新しいブランチを作成する')
+      )
+    
+    permissions:
+      contents: write
+      issues: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Create branch
+        run: |
+          ISSUE_NUMBER=${{ github.event.issue.number }}
+          TITLE="${{ github.event.issue.title }}"
+          
+          # タイトルからブランチ名を生成（英数字とハイフンのみ）
+          # [Story] #123: タイトル → タイトル 部分を抽出
+          CLEAN_TITLE=$(echo "$TITLE" | sed 's/^\[.*\] #[0-9]*: //' | sed 's/^[^:]*: //')
+          BRANCH_SUFFIX=$(echo "$CLEAN_TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//' | sed 's/-$//' | cut -c1-40)
+          BRANCH_NAME="feature/issue-${ISSUE_NUMBER}-${BRANCH_SUFFIX}"
+          
+          echo "Creating branch: $BRANCH_NAME"
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # mainブランチから新しいブランチを作成
+          git checkout -b "$BRANCH_NAME"
+          git push origin "$BRANCH_NAME"
+          
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+        id: create_branch
+      
+      - name: Comment on issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = context.issue.number;
+            const title = context.payload.issue.title;
+            
+            // タイトルからブランチ名を生成
+            const cleanTitle = title.replace(/^\[.*\] #[0-9]*: /, '').replace(/^[^:]*: /, '');
+            const branchSuffix = cleanTitle.toLowerCase()
+              .replace(/[^a-z0-9]/g, '-')
+              .replace(/--+/g, '-')
+              .replace(/^-/, '')
+              .replace(/-$/, '')
+              .substring(0, 40);
+            const branchName = 'feature/issue-' + issueNumber + '-' + branchSuffix;
+            
+            const message = [
+              '🌿 **ブランチを自動作成しました！**',
+              '',
+              '## 作業開始方法',
+              '',
+              '```bash',
+              'git fetch origin',
+              'git checkout ' + branchName,
+              '```',
+              '',
+              '## 開発フロー',
+              '',
+              '1. このブランチで実装',
+              '2. Push すると Status が **In Progress** に変わります',
+              '3. PR作成すると Status が **In Review** に変わります',
+              '4. マージすると Status が **Done** に変わります',
+              '',
+              '💡 Tip: VS Code の Git拡張機能が便利です'
+            ].join('\n');
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: message
+            });

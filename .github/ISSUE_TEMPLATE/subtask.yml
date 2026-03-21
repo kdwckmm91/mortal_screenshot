@@ -1,0 +1,66 @@
+name: Task (Form)
+description: Story配下の作業タスク（Sub-Task）を作成します。
+title: "Task: "
+labels:
+  - "Type: Task"
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 概要
+        Task は Story を完了させるための作業単位です。
+        必要に応じて 対象Project（Projects v2）に載せ、Timeline / Board で可視化します。
+
+  - type: input
+    id: parent_story
+    attributes:
+      label: 親Story
+      description: このTaskが紐づくStory Issue番号を記載してください（例：#456）。
+      placeholder: "例）#456"
+    validations:
+      required: true
+
+  - type: textarea
+    id: task_detail
+    attributes:
+      label: タスク内容
+      description: 具体的にやることを書いてください。
+      placeholder: |
+        例）
+        - ログイン画面の入力チェック処理を実装する
+        - ユニットテストを追加する
+    validations:
+      required: true
+
+  - type: textarea
+    id: definition_of_done
+    attributes:
+      label: 完了の定義（Doneの状態）
+      description: このTaskが終わったと判断する条件を書いてください。
+      placeholder: |
+        例）
+        - 正常／異常系のテストケースがすべてパスしている
+        - デザインレビューが完了している
+    validations:
+      required: false
+
+  - type: dropdown
+    id: branch_required
+    attributes:
+      label: ブランチ作成
+      description: このTaskで新しいブランチを自動作成しますか？（通常はStoryのブランチを使用）
+      options:
+        - "No - Storyのブランチを使用"
+        - "Yes - 新しいブランチを作成する（並行作業時）"
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: 備考
+      description: その他、共有しておきたい情報があれば記載してください。
+      placeholder: "必要に応じてメモを記載してください。"
+    validations:
+      required: false
