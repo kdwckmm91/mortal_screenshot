@@ -19,12 +19,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install -e .  # <--- これを追加。カレントディレクトリをパッケージとして登録します。
     - name: Run tests
       run: pytest -q
-    - name: Debug Directory Structure
-      run: |
-        pwd
-        ls -R
-    - name: Run tests
-      run: python -m pytest -q
+      env:
+        PYTHONPATH: ${{ github.workspace }}/..
